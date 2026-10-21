@@ -1,0 +1,16 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            { "Name": "ownaka" }
+        ],
+        "Category": "Utility",
+        "Description": "Uma nota O-Ink fixada na área de trabalho",
+        "Icon": "o-ink-notes",
+        "Id": "net.ownaka.oinknote",
+        "Name": "O-Ink Note",
+        "Version": "1.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-MainScript": "ui/main.qml"
+}

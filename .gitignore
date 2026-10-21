@@ -1,0 +1,7 @@
+net.ownaka.oinknotes/contents/ui/shared/
+net.ownaka.oinknote/contents/ui/shared/
+*.swp
+__pycache__/
+*.pyc
+.venv/
+venv/
