@@ -8,6 +8,7 @@ Item {
     id: root
 
     property var _pending: ({})
+    property int _seq: 0
 
     Plasma5Support.DataSource {
         id: source
@@ -16,8 +17,11 @@ Item {
 
         onNewData: (sourceName, data) => {
             disconnectSource(sourceName)
-            // sourceName é o próprio comando: a engine "executable" usa o
-            // comando como identificador da fonte.
+            // sourceName é o comando (mais um comentário "# <n>" no final
+            // pra ficar único — ver run()). A engine "executable" usa o
+            // sourceName como identificador E CACHE: reconectar com o
+            // mesmo texto devolve a resposta antiga em vez de rodar de
+            // novo, então cada chamada precisa de um sourceName inédito.
             var cbs = root._pending[sourceName]
             if (cbs && cbs.length > 0) {
                 var cb = cbs.shift()
@@ -35,10 +39,17 @@ Item {
     }
 
     function run(cmd, callback) {
-        // Enfileira callbacks por comando (suporta comandos idênticos
-        // concorrentes, raro nesse app, mas evita perder uma resposta).
-        if (!root._pending[cmd]) root._pending[cmd] = []
-        root._pending[cmd].push(callback)
-        source.connectSource(cmd)
+        // "# <contador>" no final é só um comentário de shell (não muda o
+        // que o comando faz) — existe só pra tornar o sourceName único a
+        // cada chamada, mesmo quando o MESMO comando (ex. ler o mesmo
+        // arquivo duas vezes seguidas) é rodado de novo. Sem isso, a
+        // engine "executable" do Plasma devolve a resposta em cache da
+        // vez anterior em vez de executar de novo (confirmado na prática
+        // — é a causa de notas aparentando conteúdo desatualizado).
+        root._seq++
+        var sourceName = cmd + " # " + root._seq
+        if (!root._pending[sourceName]) root._pending[sourceName] = []
+        root._pending[sourceName].push(callback)
+        source.connectSource(sourceName)
     }
 }

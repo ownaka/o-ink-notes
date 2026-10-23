@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as QQC
 import org.kde.plasma.plasmoid
+import org.kde.plasma.core as PlasmaCore
 import org.kde.kirigami as Kirigami
 import "shared"
 
@@ -8,6 +9,22 @@ PlasmoidItem {
     id: controllerRoot
 
     Plasmoid.icon: "o-ink-notes"
+
+    // Incrementado pelo menu de contexto (botão direito no ícone): recarrega
+    // as configurações do disco e força a lista de notas a reler tudo da
+    // pasta, sem precisar reiniciar o plasmashell inteiro.
+    property int syncRequestId: 0
+
+    Plasmoid.contextualActions: [
+        PlasmaCore.Action {
+            text: "[SINCRONIZAR NOTAS]"
+            icon.name: "view-refresh"
+            onTriggered: {
+                oinkStyle.reload()
+                controllerRoot.syncRequestId++
+            }
+        }
+    ]
 
     ShellRunner { id: shellRunner }
     OInkStyle { id: oinkStyle; shell: shellRunner }
@@ -31,6 +48,7 @@ PlasmoidItem {
 
         property string page: "list"
         property string currentNoteId: ""
+        property var currentNotePreloaded: null
 
         Rectangle {
             anchors.fill: parent
@@ -92,7 +110,12 @@ PlasmoidItem {
                         anchors.fill: parent
                         visible: popup.page === "list"
                         style: oinkStyle
-                        onOpenNote: (id) => { popup.currentNoteId = id; popup.page = "editor" }
+                        syncTrigger: controllerRoot.syncRequestId
+                        onOpenNote: (id, preloaded) => {
+                            popup.currentNoteId = id
+                            popup.currentNotePreloaded = preloaded
+                            popup.page = "editor"
+                        }
                     }
 
                     Item {
@@ -100,7 +123,17 @@ PlasmoidItem {
                         anchors.fill: parent
                         visible: popup.page === "editor"
 
-                        onVisibleChanged: if (visible) editorView.load(popup.currentNoteId)
+                        // Carrega ao entrar; fecha (salva se mudou algo e
+                        // sai do modo de edição) ao sair — não importa se a
+                        // saída foi pelo [VOLTAR] ou trocando de aba.
+                        onVisibleChanged: {
+                            if (visible) {
+                                editorView.load(popup.currentNoteId, popup.currentNotePreloaded)
+                                popup.currentNotePreloaded = null
+                            } else {
+                                editorView.closeEditor()
+                            }
+                        }
 
                         Column {
                             anchors.fill: parent

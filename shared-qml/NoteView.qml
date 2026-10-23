@@ -19,13 +19,42 @@ Item {
 
     readonly property var blocks: MarkdownUtils.parseBlocks(bodyText)
     property string _pendingLoadId: ""
+    // Incrementado a cada load(): uma leitura assíncrona que termina depois
+    // de um load() mais novo (ex. trocou de nota rápido) é descartada em
+    // vez de pisar no conteúdo da nota atual com o de uma nota antiga.
+    property int _loadToken: 0
 
-    function load(id) {
+    // "preloaded" (opcional): { meta, body } já conhecidos por quem chamou
+    // (ex. acabou de criar a nota) — pula a leitura assíncrona, então não
+    // existe nem uma fração de segundo em que a tela mostra o conteúdo da
+    // nota anterior por engano.
+    function load(id, preloaded) {
+        // Antes de trocar de nota, fecha a edição da nota ANTERIOR (salva
+        // se mudou algo) com o id/estado ainda antigos. Sem isso, um
+        // fechamento tardio (ex. perda de foco disparada depois da troca)
+        // gravaria o texto da nota antiga no arquivo da nota nova.
+        root.closeEditor()
+
         root.noteId = id
         root.ready = false
+        // Limpa o conteúdo na hora: enquanto a leitura não termina, a tela
+        // não pode continuar mostrando o texto da nota anterior.
+        root.meta = { title: "", created: "", modified: "" }
+        root.bodyText = ""
+        root._loadToken++
+        var token = root._loadToken
         if (!id || !style) { root._pendingLoadId = id; return }
         root._pendingLoadId = ""
+
+        if (preloaded) {
+            root.meta = preloaded.meta
+            root.bodyText = preloaded.body
+            root.ready = true
+            return
+        }
+
         NoteStore.readNote(style.shell, style.notesFolder, id, function (note) {
+            if (token !== root._loadToken) return // leitura de um load() já superado
             if (!note) return
             root.meta = note.meta
             root.bodyText = note.body
@@ -46,21 +75,46 @@ Item {
     }
 
     function startEditing() {
+        if (!root.ready) return // não deixa editar antes do conteúdo real ter chegado
         editArea.text = root.bodyText
         root.editing = true
         editArea.forceActiveFocus()
     }
 
-    function stopEditingAndSave() {
+    // Sai do modo de edição (volta a mostrar renderizado) e só grava se o
+    // texto realmente mudou desde que a edição começou.
+    function closeEditor() {
         if (!root.editing) return
         root.editing = false
-        root.bodyText = editArea.text
-        root.save()
+        if (editArea.text !== root.bodyText) {
+            root.bodyText = editArea.text
+            root.save()
+        }
+    }
+
+    // Mostra sempre qual nota está aberta (e se já carregou de verdade),
+    // pra nunca ficar na dúvida se o que está na tela é a nota certa.
+    Text {
+        id: statusLabel
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        text: root.ready
+              ? ("[" + (MarkdownUtils.deriveTitle(root.meta, root.bodyText) || "SEM TÍTULO") + "]")
+              : "[CARREGANDO…]"
+        elide: Text.ElideRight
+        color: root.style ? root.style.secondaryColor : "#888477"
+        font.family: root.style ? root.style.fontFamily : "monospace"
+        font.pixelSize: Math.max(9, (root.style ? root.style.fontSize : 13) - 4)
     }
 
     Flickable {
         id: flick
-        anchors.fill: parent
+        anchors.top: statusLabel.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.topMargin: 4
         visible: !root.editing
         contentWidth: width
         contentHeight: viewColumn.implicitHeight + 20
@@ -122,7 +176,11 @@ Item {
 
     QQC.TextArea {
         id: editArea
-        anchors.fill: parent
+        anchors.top: statusLabel.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.topMargin: 4
         visible: root.editing
         wrapMode: QQC.TextArea.Wrap
         selectByMouse: true
@@ -131,6 +189,6 @@ Item {
         font.pixelSize: root.style ? root.style.fontSize : 13
         background: Rectangle { color: "transparent" }
 
-        onActiveFocusChanged: if (!activeFocus) root.stopEditingAndSave()
+        onActiveFocusChanged: if (!activeFocus) root.closeEditor()
     }
 }
