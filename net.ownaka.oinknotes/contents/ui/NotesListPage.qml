@@ -9,12 +9,35 @@ Item {
     id: root
 
     property var style
-    signal openNote(string id)
+    // "preloaded" vem preenchido só na criação de nota nova (já sabemos o
+    // conteúdo, sem precisar reler do disco); null quando é nota existente.
+    signal openNote(string id, var preloaded)
+
+    // Muda quando o usuário clica em "[SINCRONIZAR NOTAS]" no menu de
+    // contexto do ícone (botão direito) — força reler tudo da pasta.
+    property int syncTrigger: 0
+    onSyncTriggerChanged: refresh()
 
     property string searchQuery: ""
     property var pinnedIds: []
     property var allNotes: []
     property string confirmDeleteId: ""
+    property bool creatingNote: false
+    // Incrementado a cada refresh(): descarta o resultado de uma
+    // atualização mais antiga que termine depois de uma mais nova (evita
+    // notas duplicadas/estado velho quando o timer e um refresh manual
+    // ficam em voo ao mesmo tempo).
+    property int _refreshGeneration: 0
+
+    // Cada refresh() reler nota por nota (um processo novo por nota, via
+    // ShellRunner) é o que deixava o Plasma inteiro lento: com N notas
+    // visíveis, isso é N processos por segundo, pra sempre, enquanto o
+    // popup estiver aberto. O FolderListModel já expõe fileModified sem
+    // custo (é só stat, ele mesmo observa a pasta); guardando o último
+    // fileModified visto por nota, só relemos (só gastamos um processo)
+    // a nota que realmente mudou desde o ciclo anterior.
+    property var _mtimeCache: ({})
+    property var _entryCache: ({})
 
     FolderListModel {
         id: folderModel
@@ -29,37 +52,64 @@ Item {
     function refresh() {
         if (!root.style) return
         _refreshPinned()
-        var ids = []
+        root._refreshGeneration++
+        var generation = root._refreshGeneration
+        var items = []
+        var liveIds = ({})
         for (var i = 0; i < folderModel.count; i++) {
-            ids.push(folderModel.get(i, "fileName").replace(/\.md$/, ""))
+            var id = folderModel.get(i, "fileName").replace(/\.md$/, "")
+            var modified = folderModel.get(i, "fileModified")
+            items.push({ id: id, mtime: modified ? modified.getTime() : 0 })
+            liveIds[id] = true
         }
-        _loadAll(ids)
+        // Descarta cache de notas apagadas, pra não crescer pra sempre.
+        for (var cachedId in root._entryCache) {
+            if (!liveIds[cachedId]) {
+                delete root._entryCache[cachedId]
+                delete root._mtimeCache[cachedId]
+            }
+        }
+        _loadAll(items, generation)
     }
 
-    function _loadAll(ids) {
-        if (ids.length === 0) { _applyModel([]); return }
+    function _loadAll(items, generation) {
+        if (items.length === 0) { _applyModel([], generation); return }
         var results = []
-        var pending = ids.length
-        ids.forEach(function (id) {
-            NoteStore.readNote(root.style.shell, root.style.notesFolder, id, function (note) {
+        var toRead = []
+        items.forEach(function (item) {
+            var cached = root._entryCache[item.id]
+            if (cached && root._mtimeCache[item.id] === item.mtime) {
+                results.push(cached)
+            } else {
+                toRead.push(item)
+            }
+        })
+        if (toRead.length === 0) { _applyModel(results, generation); return }
+        var pending = toRead.length
+        toRead.forEach(function (item) {
+            NoteStore.readNote(root.style.shell, root.style.notesFolder, item.id, function (note) {
                 pending--
                 if (note) {
                     var title = MarkdownUtils.deriveTitle(note.meta, note.body)
-                    results.push({
-                        noteId: id,
+                    var entry = {
+                        noteId: item.id,
                         title: title,
                         preview: MarkdownUtils.derivePreview(note.body),
                         modified: note.meta.modified || "",
                         searchBlob: (title + " " + note.body).toLowerCase(),
                         pinned: false
-                    })
+                    }
+                    root._entryCache[item.id] = entry
+                    root._mtimeCache[item.id] = item.mtime
+                    results.push(entry)
                 }
-                if (pending === 0) _applyModel(results)
+                if (pending === 0) _applyModel(results, generation)
             })
         })
     }
 
-    function _applyModel(results) {
+    function _applyModel(results, generation) {
+        if (generation !== root._refreshGeneration) return // refresh() mais velho, descarta
         results.sort(function (a, b) { return (b.modified || "").localeCompare(a.modified || "") })
         root.allNotes = results
         _applyFilter()
@@ -116,9 +166,15 @@ Item {
     Component.onCompleted: refresh()
     onStyleChanged: refresh()
     onSearchQueryChanged: _applyFilter()
+    onVisibleChanged: if (visible) refresh()
 
+    // Não existe file watcher no QML puro (sem plugin C++), então a pasta
+    // de notas é a fonte de verdade e esse timer é como o popup percebe
+    // mudanças feitas por fora (ex. editadas pelo widget da área de
+    // trabalho, outro processo). 1s é rápido o bastante pra parecer "quase
+    // na hora" sem martelar o shell com muitos processos por segundo.
     Timer {
-        interval: 2500
+        interval: 1000
         running: root.visible
         repeat: true
         onTriggered: root.refresh()
@@ -146,9 +202,13 @@ Item {
                     fg: root.style ? root.style.accentColor : "#689d6a"
                     outlineColor: root.style ? root.style.accentColor : "#689d6a"
                     fontFamily: root.style ? root.style.fontFamily : "monospace"
+                    enabled: !root.creatingNote
                     onClicked: {
-                        NoteStore.createNote(root.style.shell, root.style.notesFolder, function (id) {
-                            if (id) root.openNote(id)
+                        if (root.creatingNote) return // trava contra duplo-clique criando 2 notas
+                        root.creatingNote = true
+                        NoteStore.createNote(root.style.shell, root.style.notesFolder, function (id, meta, body) {
+                            root.creatingNote = false
+                            if (id) root.openNote(id, { meta: meta, body: body })
                         })
                     }
                 }
@@ -195,7 +255,7 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         z: -1
-                        onClicked: root.openNote(noteId)
+                        onClicked: root.openNote(noteId, null)
                     }
 
                     Column {
